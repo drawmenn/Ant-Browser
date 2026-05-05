@@ -82,6 +82,13 @@ func ValidateProxyConfig(proxyConfig string, proxies []config.BrowserProxy, prox
 	if strings.HasPrefix(l, "http://") || strings.HasPrefix(l, "https://") || strings.HasPrefix(l, "socks5://") {
 		return true, ""
 	}
+	if IsChainSocks5Proxy(src) {
+		if _, err := ParseChainSocks5Config(src); err != nil {
+			return false, fmt.Sprintf("链式代理配置解析失败: %v", err)
+		}
+		return true, ""
+	}
+
 	// hysteria2/tuic 通过 sing-box 支持，先做可解析性校验
 	if IsSingBoxProtocol(src) {
 		if _, err := BuildSingBoxOutbound(src); err != nil {
@@ -126,6 +133,10 @@ func RequiresBridge(proxyConfig string, proxies []config.BrowserProxy, proxyId s
 	if strings.HasPrefix(l, "hysteria://") || strings.HasPrefix(l, "hysteria2://") {
 		return false
 	}
+	if IsChainSocks5Proxy(src) {
+		return true
+	}
+
 	// Xray 支持的协议
 	if strings.HasPrefix(l, "vmess://") || strings.HasPrefix(l, "vless://") || strings.HasPrefix(l, "trojan://") || strings.HasPrefix(l, "ss://") {
 		return true
@@ -211,17 +222,53 @@ func (m *XrayManager) ensureBridge(proxyConfig string, proxies []config.BrowserP
 		return "", "", fmt.Errorf("未找到代理节点")
 	}
 	src = normalizeNodeScheme(src)
-	standardProxy, outbound, err := ParseProxyNode(src)
-	if err != nil {
-		log.Error("节点解析失败", logger.F("error", err))
-		return "", "", err
+
+	var (
+		outbounds     []interface{}
+		routes        []interface{}
+		preferredPort int
+	)
+
+	if IsChainSocks5Proxy(src) {
+		chainCfg, err := ParseChainSocks5Config(src)
+		if err != nil {
+			log.Error("链式节点解析失败", logger.F("error", err))
+			return "", "", err
+		}
+		outbounds = []interface{}{
+			chainSocks5Outbound(chainCfg.First, "first-hop", ""),
+			chainSocks5Outbound(chainCfg.Second, "second-hop", "first-hop"),
+		}
+		routes = []interface{}{
+			map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{"socks-in"},
+				"outboundTag": "second-hop",
+			},
+		}
+		preferredPort = chainCfg.LocalPort
+	} else {
+		standardProxy, outbound, err := ParseProxyNode(src)
+		if err != nil {
+			log.Error("节点解析失败", logger.F("error", err))
+			return "", "", err
+		}
+		if standardProxy != "" {
+			return standardProxy, "", nil
+		}
+		if outbound == nil {
+			return "", "", fmt.Errorf("节点解析失败")
+		}
+		outbounds = []interface{}{outbound}
+		routes = []interface{}{
+			map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{"socks-in"},
+				"outboundTag": "proxy-out",
+			},
+		}
 	}
-	if standardProxy != "" {
-		return standardProxy, "", nil
-	}
-	if outbound == nil {
-		return "", "", fmt.Errorf("节点解析失败")
-	}
+
 	key := computeNodeKey(src + "\x00" + dnsServers)
 
 	if socksURL, reused := m.tryReuseBridge(key, pin); reused {
@@ -234,17 +281,25 @@ func (m *XrayManager) ensureBridge(proxyConfig string, proxies []config.BrowserP
 		log.Error("xray 不可用", logger.F("error", err))
 		return "", "", err
 	}
-	// 最多重试 3 次，解决端口分配后被抢占的 TOCTOU 竞争问题
-	const maxLaunchRetries = 3
+	maxLaunchRetries := 3
+	if preferredPort > 0 {
+		maxLaunchRetries = 1
+	}
 	var lastErr error
 	for attempt := 1; attempt <= maxLaunchRetries; attempt++ {
-		port, err := nextAvailablePort()
-		if err != nil {
-			log.Error("端口分配失败", logger.F("error", err), logger.F("attempt", attempt))
-			lastErr = err
-			continue
+		var port int
+		if preferredPort > 0 {
+			port = preferredPort
+		} else {
+			port, err = nextAvailablePort()
+			if err != nil {
+				log.Error("端口分配失败", logger.F("error", err), logger.F("attempt", attempt))
+				lastErr = err
+				continue
+			}
 		}
-		cfgPath, err := m.buildRuntimeConfig(key, outbound, port, dnsServers)
+
+		cfgPath, err := m.buildRuntimeConfigWithRoute(key, outbounds, routes, port, dnsServers)
 		if err != nil {
 			log.Error("xray 配置生成失败", logger.F("error", err))
 			return "", "", err
@@ -279,7 +334,6 @@ func (m *XrayManager) ensureBridge(proxyConfig string, proxies []config.BrowserP
 			if stderrFile != nil {
 				stderrFile.Close()
 			}
-			// 优先读 stderr，再读 xray-error.log
 			if stderrContent, readErr := os.ReadFile(stderrPath); readErr == nil && len(stderrContent) > 0 {
 				log.Error("xray stderr", logger.F("output", string(stderrContent)))
 			} else {
@@ -295,7 +349,6 @@ func (m *XrayManager) ensureBridge(proxyConfig string, proxies []config.BrowserP
 			bridge.LastError = err.Error()
 			log.Error("xray 端口不可用，重试", logger.F("key", key), logger.F("error", err), logger.F("port", port), logger.F("attempt", attempt))
 			lastErr = err
-			// 等待一下再重试，给 OS 时间回收端口
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
@@ -654,6 +707,102 @@ func (m *XrayManager) buildRuntimeConfig(key string, outbound map[string]interfa
 	return cfgPath, nil
 }
 
+func chainSocks5Outbound(hop chainSocks5Hop, tag string, nextTag string) map[string]interface{} {
+	user := map[string]interface{}{}
+	if strings.TrimSpace(hop.Username) != "" {
+		user["user"] = hop.Username
+		if strings.TrimSpace(hop.Password) != "" {
+			user["pass"] = hop.Password
+		}
+	}
+	servers := []interface{}{
+		map[string]interface{}{
+			"address": hop.Server,
+			"port":    hop.Port,
+			"users":   []interface{}{user},
+		},
+	}
+	if len(user) == 0 {
+		servers = []interface{}{
+			map[string]interface{}{
+				"address": hop.Server,
+				"port":    hop.Port,
+			},
+		}
+	}
+
+	outbound := map[string]interface{}{
+		"protocol": "socks",
+		"tag":      tag,
+		"settings": map[string]interface{}{
+			"servers": servers,
+		},
+	}
+	if strings.TrimSpace(nextTag) != "" {
+		outbound["proxySettings"] = map[string]interface{}{
+			"tag": nextTag,
+		}
+	}
+	return outbound
+}
+
+func (m *XrayManager) buildRuntimeConfigWithRoute(
+	key string,
+	outbounds []interface{},
+	rules []interface{},
+	port int,
+	dnsServers string,
+) (string, error) {
+	baseDir := m.resolveWorkdir(key)
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return "", err
+	}
+	cfgPath := filepath.Join(baseDir, "xray-config.json")
+	cfg := map[string]interface{}{
+		"log": map[string]interface{}{
+			"loglevel": "info",
+			"error":    filepath.Join(baseDir, "xray-error.log"),
+		},
+		"inbounds": []interface{}{
+			map[string]interface{}{
+				"tag":      "socks-in",
+				"port":     port,
+				"listen":   "127.0.0.1",
+				"protocol": "socks",
+				"settings": map[string]interface{}{
+					"udp": true,
+				},
+				"sniffing": map[string]interface{}{
+					"enabled": false,
+				},
+			},
+		},
+		"outbounds": append(outbounds,
+			map[string]interface{}{
+				"protocol": "direct",
+				"tag":      "direct",
+			},
+			map[string]interface{}{
+				"protocol": "blackhole",
+				"tag":      "block",
+			},
+		),
+		"routing": map[string]interface{}{
+			"rules": rules,
+		},
+	}
+	if dnsCfg := parseDnsConfig(dnsServers); dnsCfg != nil {
+		cfg["dns"] = dnsCfg
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(cfgPath, data, 0644); err != nil {
+		return "", err
+	}
+	return cfgPath, nil
+}
 func (m *XrayManager) resolveWorkdir(key string) string {
 	root := strings.TrimSpace(m.Config.Browser.UserDataRoot)
 	if root == "" {

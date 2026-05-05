@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { Select } from '../../../shared/components'
 import type { BrowserGroup } from '../types'
 
 interface GroupSelectorProps {
@@ -15,14 +16,6 @@ interface FlatGroup extends BrowserGroup {
 
 // 将分组列表扁平化并计算层级
 function flattenGroups(groups: BrowserGroup[]): FlatGroup[] {
-  const map = new Map<string, BrowserGroup>()
-  groups.forEach(g => map.set(g.groupId, g))
-
-  const getLevel = (g: BrowserGroup): number => {
-    if (!g.parentId || !map.has(g.parentId)) return 0
-    return 1 + getLevel(map.get(g.parentId)!)
-  }
-
   const result: FlatGroup[] = []
   const addChildren = (parentId: string, level: number) => {
     groups
@@ -42,19 +35,23 @@ function flattenGroups(groups: BrowserGroup[]): FlatGroup[] {
 
 export function GroupSelector({ groups, value, onChange, placeholder = '选择分组', className = '' }: GroupSelectorProps) {
   const flatGroups = useMemo(() => flattenGroups(groups), [groups])
+  const options = useMemo(
+    () => [
+      { value: '', label: placeholder },
+      ...flatGroups.map(g => ({
+        value: g.groupId,
+        label: `${'　'.repeat(g.level)}${g.groupName}`,
+      })),
+    ],
+    [flatGroups, placeholder]
+  )
 
   return (
-    <select
-      className={`px-3 py-2 border rounded dark:bg-gray-700 dark:border-gray-600 ${className}`}
+    <Select
+      className={className}
       value={value}
       onChange={e => onChange(e.target.value)}
-    >
-      <option value="">{placeholder}</option>
-      {flatGroups.map(g => (
-        <option key={g.groupId} value={g.groupId}>
-          {'　'.repeat(g.level)}{g.groupName}
-        </option>
-      ))}
-    </select>
+      options={options}
+    />
   )
 }

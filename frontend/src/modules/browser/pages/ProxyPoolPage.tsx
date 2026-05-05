@@ -15,6 +15,10 @@ const PROXY_GLOBAL_AUTO_REFRESH_KEY = 'browser:proxyPool:globalAutoRefreshEnable
 const PROXY_GLOBAL_REFRESH_INTERVAL_KEY = 'browser:proxyPool:globalRefreshIntervalM:v1'
 const PROXY_LATENCY_CACHE_TTL_MS = 12 * 60 * 60 * 1000
 const PROXY_IP_HEALTH_CACHE_TTL_MS = 12 * 60 * 60 * 1000
+const SPEED_RESULT_EVENT = 'proxy:speed:result'
+const IP_HEALTH_RESULT_EVENT = 'proxy:iphealth:result'
+const PROXY_SPEED_TEST_CONCURRENCY = 20
+const PROXY_IP_HEALTH_TEST_CONCURRENCY = 10
 
 const BUILTIN_PROXIES: BrowserProxy[] = [
   { proxyId: '__direct__', proxyName: '直连（不走代理）', proxyConfig: 'direct://' },
@@ -39,7 +43,7 @@ interface ClashProxy {
   [key: string]: any
 }
 
-type ProxyImportMode = 'clash' | 'direct'
+type ProxyImportMode = 'clash' | 'direct' | 'chain'
 
 interface DirectImportForm {
   proxyName: string
@@ -48,6 +52,20 @@ interface DirectImportForm {
   port: string
   username: string
   password: string
+}
+
+interface ChainHopForm {
+  server: string
+  port: string
+  username: string
+  password: string
+}
+
+interface ChainImportForm {
+  proxyName: string
+  localPort: string
+  first: ChainHopForm
+  second: ChainHopForm
 }
 
 const DIRECT_PROXY_PROTOCOL_OPTIONS = [
@@ -63,6 +81,23 @@ const INITIAL_DIRECT_IMPORT_FORM: DirectImportForm = {
   port: '',
   username: '',
   password: '',
+}
+
+const INITIAL_CHAIN_IMPORT_FORM: ChainImportForm = {
+  proxyName: '',
+  localPort: '',
+  first: {
+    server: '',
+    port: '',
+    username: '',
+    password: '',
+  },
+  second: {
+    server: '',
+    port: '',
+    username: '',
+    password: '',
+  },
 }
 
 interface ImportCandidate {
@@ -97,9 +132,108 @@ interface URLImportSourceMeta {
   sourceLastRefreshAt: string
 }
 
+const CHAIN_SOCKS5_PREFIX = 'chain+socks5://'
+
+interface ChainSocks5HopConfig {
+  protocol: 'socks5'
+  server: string
+  port: number
+  username?: string
+  password?: string
+}
+
+interface ChainSocks5Config {
+  localPort?: number
+  first: ChainSocks5HopConfig
+  second: ChainSocks5HopConfig
+}
+
+function toChainImportForm(proxyName: string, cfg: ChainSocks5Config): ChainImportForm {
+  return {
+    proxyName,
+    localPort: cfg.localPort ? String(cfg.localPort) : '',
+    first: {
+      server: cfg.first.server,
+      port: String(cfg.first.port),
+      username: cfg.first.username || '',
+      password: cfg.first.password || '',
+    },
+    second: {
+      server: cfg.second.server,
+      port: String(cfg.second.port),
+      username: cfg.second.username || '',
+      password: cfg.second.password || '',
+    },
+  }
+}
+
+function parseChainSocks5Config(proxyConfig: string): ChainSocks5Config | null {
+  const cfg = proxyConfig.trim()
+  if (!cfg.toLowerCase().startsWith(CHAIN_SOCKS5_PREFIX)) {
+    return null
+  }
+  const encoded = cfg.slice(CHAIN_SOCKS5_PREFIX.length)
+  if (!encoded) {
+    return null
+  }
+
+  const normalizeHop = (raw: unknown): ChainSocks5HopConfig | null => {
+    if (!raw || typeof raw !== 'object') return null
+    const hop = raw as Record<string, unknown>
+    const protocol = String(hop.protocol || '').trim().toLowerCase()
+    if (protocol && protocol !== 'socks5') return null
+
+    const server = String(hop.server || '').trim()
+    if (!server) return null
+
+    const portVal = Number(hop.port || 0)
+    if (!Number.isInteger(portVal) || portVal < 1 || portVal > 65535) return null
+
+    const username = String(hop.username || '').trim()
+    const password = hop.password === undefined || hop.password === null ? '' : String(hop.password)
+    if (password && !username) return null
+
+    return {
+      protocol: 'socks5',
+      server,
+      port: portVal,
+      username: username || undefined,
+      password: password || undefined,
+    }
+  }
+
+  try {
+    const decoded = decodeURIComponent(encoded)
+    const parsed = JSON.parse(decoded) as Record<string, unknown>
+    const first = normalizeHop(parsed.first)
+    const second = normalizeHop(parsed.second)
+    if (!first || !second) return null
+
+    const localPortRaw = parsed.localPort
+    const localPortNum = localPortRaw === undefined || localPortRaw === null || localPortRaw === ''
+      ? 0
+      : Number(localPortRaw)
+    if (!Number.isInteger(localPortNum) || localPortNum < 0 || localPortNum > 65535) return null
+
+    return {
+      first,
+      second,
+      localPort: localPortNum > 0 ? localPortNum : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
 function parseProxyInfo(proxyConfig: string): { type: string; server: string; port: number } {
   const cfg = proxyConfig.trim()
   if (cfg === 'direct://') return { type: 'direct', server: '-', port: 0 }
+
+  const chain = parseChainSocks5Config(cfg)
+  if (chain) {
+    return { type: 'chain-socks5', server: '127.0.0.1', port: chain.localPort || 0 }
+  }
+
   const urlMatch = cfg.match(/^([a-zA-Z0-9+\-]+):\/\//)
   if (urlMatch) {
     const scheme = urlMatch[1].toLowerCase()
@@ -318,6 +452,69 @@ function buildDirectImportCandidate(form: DirectImportForm): ImportCandidate {
     proxyConfig: normalizedConfig,
   }
 }
+
+function buildChainImportCandidate(form: ChainImportForm): ImportCandidate {
+  const parseHop = (label: string, hop: ChainHopForm): ChainSocks5HopConfig => {
+    const server = hop.server.trim()
+    if (!server) {
+      throw new Error(`请输入${label}代理地址`)
+    }
+    if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(server)) {
+      throw new Error(`${label}代理地址只需要填写主机名或 IP，不需要协议头`)
+    }
+
+    const portInput = hop.port.trim()
+    if (!portInput) {
+      throw new Error(`请输入${label}代理端口`)
+    }
+    if (!/^\d+$/.test(portInput)) {
+      throw new Error(`${label}代理端口必须为数字`)
+    }
+
+    const port = Number(portInput)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`${label}代理端口必须在 1-65535 之间`)
+    }
+
+    const username = hop.username.trim()
+    const password = hop.password
+    if (password && !username) {
+      throw new Error(`${label}填写密码时请同时填写账号`)
+    }
+
+    return {
+      protocol: 'socks5',
+      server,
+      port,
+      username: username || undefined,
+      password: password || undefined,
+    }
+  }
+
+  const localPortInput = form.localPort.trim()
+  if (localPortInput && !/^\d+$/.test(localPortInput)) {
+    throw new Error('本地监听端口必须为数字')
+  }
+  const localPort = localPortInput ? Number(localPortInput) : 0
+  if (localPortInput && (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535)) {
+    throw new Error('本地监听端口必须在 1-65535 之间')
+  }
+
+  const payload: ChainSocks5Config = {
+    first: parseHop('第一层', form.first),
+    second: parseHop('第二层', form.second),
+    localPort: localPort > 0 ? localPort : undefined,
+  }
+
+  const encodedPayload = encodeURIComponent(JSON.stringify(payload))
+  const proxyConfig = `${CHAIN_SOCKS5_PREFIX}${encodedPayload}`
+
+  return {
+    proxyName: form.proxyName.trim() || `链式代理-${payload.first.server}-${payload.second.server}`,
+    proxyConfig,
+  }
+}
+
 
 function buildImportCandidatesFromClash(parsedProxies: ClashProxy[], prefix: string): ImportCandidate[] {
   return parsedProxies.map((proxy, index) => ({
@@ -721,6 +918,8 @@ export function ProxyPoolPage() {
   const [importNamePrefix, setImportNamePrefix] = useState('')
   const [importGroupName, setImportGroupName] = useState('')
   const [directImportForm, setDirectImportForm] = useState<DirectImportForm>(() => ({ ...INITIAL_DIRECT_IMPORT_FORM }))
+  const [chainImportForm, setChainImportForm] = useState<ChainImportForm>(() => ({ ...INITIAL_CHAIN_IMPORT_FORM }))
+  const [chainEditMode, setChainEditMode] = useState(false)
   const [previewModalOpen, setPreviewModalOpen] = useState(false)
   const [previewList, setPreviewList] = useState<ProxyDisplayInfo[]>([])
   const [removedPreviewProxyNames, setRemovedPreviewProxyNames] = useState<string[]>([])
@@ -1094,14 +1293,14 @@ export function ProxyPoolPage() {
     setLatencyMap(prev => ({ ...prev, ...init }))
 
     // 监听后端实时推送的单个测速结果
-    const off = EventsOn('proxy:speed:result', (data: { proxyId: string; ok: boolean; latencyMs: number; error: string }) => {
+    const off = EventsOn(SPEED_RESULT_EVENT, (data: { proxyId: string; ok: boolean; latencyMs: number; error: string }) => {
       const val = toLatencyValue(data.ok, data.latencyMs, data.error)
       setLatencyMap(prev => ({ ...prev, [data.proxyId]: val }))
     })
 
     try {
       const proxyIds = testable.map(p => p.proxyId)
-      const results = await browserProxyBatchTestSpeed(proxyIds, 20)
+      const results = await browserProxyBatchTestSpeed(proxyIds, PROXY_SPEED_TEST_CONCURRENCY)
       setLatencyMap(prev => {
         const next = { ...prev }
         results.forEach(result => {
@@ -1147,7 +1346,7 @@ export function ProxyPoolPage() {
     const idSet = new Set(ids)
     setCheckingIPHealthIds(prev => new Set([...Array.from(prev), ...ids]))
 
-    const off = EventsOn('proxy:iphealth:result', (data: ProxyIPHealthResult) => {
+    const off = EventsOn(IP_HEALTH_RESULT_EVENT, (data: ProxyIPHealthResult) => {
       if (!data?.proxyId || !idSet.has(data.proxyId)) return
       setIPHealthMap(prev => ({ ...prev, [data.proxyId]: data }))
       setCheckingIPHealthIds(prev => {
@@ -1158,7 +1357,7 @@ export function ProxyPoolPage() {
     })
 
     try {
-      const results = await browserProxyBatchCheckIPHealth(ids, 10)
+      const results = await browserProxyBatchCheckIPHealth(ids, PROXY_IP_HEALTH_TEST_CONCURRENCY)
       setIPHealthMap(prev => {
         const next = { ...prev }
         results.forEach(result => {
@@ -1295,6 +1494,7 @@ export function ProxyPoolPage() {
       width: '320px',
       render: (_, record) => {
         const isBuiltin = BUILTIN_PROXY_IDS.has(record.proxyId)
+        const isEditLocked = record.proxyId === '__direct__'
         const hasSource = !!record.sourceId && !!record.sourceUrl
         return (
           <div className="flex gap-2">
@@ -1322,9 +1522,9 @@ export function ProxyPoolPage() {
             >IP健康</Button>
             <Button
               size="sm" variant="ghost"
-              disabled={isBuiltin}
-              title={isBuiltin ? '内置代理不可编辑' : undefined}
-              onClick={(e) => { e.stopPropagation(); if (!isBuiltin) handleEdit(record) }}
+              disabled={isEditLocked}
+              title={isEditLocked ? '直连代理不可编辑' : undefined}
+              onClick={(e) => { e.stopPropagation(); if (!isEditLocked) handleEdit(record) }}
             >编辑</Button>
             <Button
               size="sm" variant="danger"
@@ -1370,23 +1570,37 @@ export function ProxyPoolPage() {
     const proxy = proxies.find(p => p.proxyId === record.proxyId)
     if (proxy) {
       setEditingProxy(proxy)
-      setEditForm({ proxyName: proxy.proxyName, proxyConfig: proxy.proxyConfig, dnsServers: proxy.dnsServers || '', groupName: proxy.groupName || '' })
+      const chainCfg = parseChainSocks5Config(proxy.proxyConfig)
+      if (chainCfg) {
+        setChainImportForm(toChainImportForm(proxy.proxyName, chainCfg))
+        setChainEditMode(true)
+        setEditForm({ proxyName: proxy.proxyName, proxyConfig: proxy.proxyConfig, dnsServers: proxy.dnsServers || '', groupName: proxy.groupName || '' })
+      } else {
+        setChainEditMode(false)
+        setEditForm({ proxyName: proxy.proxyName, proxyConfig: proxy.proxyConfig, dnsServers: proxy.dnsServers || '', groupName: proxy.groupName || '' })
+      }
       setEditModalOpen(true)
     }
   }
 
   const handleSaveProxy = async () => {
-    if (!editForm.proxyName.trim()) { toast.error('请输入代理名称'); return }
+    const isChainEditing = chainEditMode
+    const nextProxyName = isChainEditing ? chainImportForm.proxyName.trim() : editForm.proxyName.trim()
+    if (!nextProxyName) { toast.error('请输入代理名称'); return }
     if (!editingProxy) return
     setSaving(true)
     try {
+      const nextProxyConfig = isChainEditing
+        ? buildChainImportCandidate(chainImportForm).proxyConfig
+        : editForm.proxyConfig
       const newProxies = proxies.map(p =>
         p.proxyId === editingProxy.proxyId
-          ? { ...p, proxyName: editForm.proxyName, proxyConfig: editForm.proxyConfig, dnsServers: editForm.dnsServers, groupName: editForm.groupName }
+          ? { ...p, proxyName: nextProxyName, proxyConfig: nextProxyConfig, dnsServers: editForm.dnsServers, groupName: editForm.groupName }
           : p
       )
       await saveProxies(newProxies)
       setEditModalOpen(false)
+      setChainEditMode(false)
       toast.success('代理已更新')
     } catch (error: any) {
       toast.error(error?.message || '保存失败')
@@ -1420,6 +1634,16 @@ export function ProxyPoolPage() {
       setImportUrl('')
       setImportDnsServers('')
     }
+  }
+
+  const updateChainHop = (hop: 'first' | 'second', field: keyof ChainHopForm, value: string) => {
+    setChainImportForm(prev => ({
+      ...prev,
+      [hop]: {
+        ...prev[hop],
+        [field]: value,
+      },
+    }))
   }
 
   const handleFetchImportURL = async () => {
@@ -1461,7 +1685,9 @@ export function ProxyPoolPage() {
       const prefix = importNamePrefix.trim()
       const candidates = importMode === 'clash'
         ? buildImportCandidatesFromClash(parseClashImportText(importText), prefix)
-        : [buildDirectImportCandidate(directImportForm)]
+        : importMode === 'direct'
+          ? [buildDirectImportCandidate(directImportForm)]
+          : [buildChainImportCandidate(chainImportForm)]
       if (!candidates.length) {
         toast.error('未解析到可导入代理')
         return
@@ -1523,6 +1749,7 @@ export function ProxyPoolPage() {
       setImportNamePrefix('')
       setImportGroupName('')
       setDirectImportForm({ ...INITIAL_DIRECT_IMPORT_FORM })
+      setChainImportForm({ ...INITIAL_CHAIN_IMPORT_FORM })
       setPreviewList([])
       setRemovedPreviewProxyNames([])
       toast.success(`成功导入 ${newProxies.length} 个代理`)
@@ -1536,7 +1763,9 @@ export function ProxyPoolPage() {
   const selectedCount = selectedIds.size
   const canParseImport = importMode === 'clash'
     ? !!importText.trim()
-    : !!directImportForm.server.trim() && !!directImportForm.port.trim()
+    : importMode === 'direct'
+      ? !!directImportForm.server.trim() && !!directImportForm.port.trim()
+      : !!chainImportForm.first.server.trim() && !!chainImportForm.first.port.trim() && !!chainImportForm.second.server.trim() && !!chainImportForm.second.port.trim()
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -1648,7 +1877,7 @@ export function ProxyPoolPage() {
           </>
         }>
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <Button
               variant={importMode === 'clash' ? undefined : 'secondary'}
               onClick={() => handleImportModeChange('clash')}
@@ -1661,11 +1890,19 @@ export function ProxyPoolPage() {
             >
               HTTP / SOCKS5（测试中）
             </Button>
+            <Button
+              variant={importMode === 'chain' ? undefined : 'secondary'}
+              onClick={() => handleImportModeChange('chain')}
+            >
+              链式代理
+            </Button>
           </div>
           <p className="text-sm text-[var(--color-text-muted)]">
             {importMode === 'clash'
               ? '支持粘贴 Clash YAML，或通过订阅 URL 自动拉取并解析（含 proxies、dns、proxy-groups）'
-              : '支持单条录入 HTTP / HTTPS / SOCKS5 代理，账号和密码均可留空，导入后直接生效，不走 Clash 桥接'}
+              : importMode === 'direct'
+                ? '支持单条录入 HTTP / HTTPS / SOCKS5 代理，账号和密码均可留空，导入后直接生效，不走 Clash 桥接'
+                : '支持两层 SOCKS5 链式代理，导入后将由本地桥接生成 127.0.0.1 SOCKS5 供 Chromium 使用'}
           </p>
           {importMode === 'clash' && (
             <>
@@ -1757,6 +1994,106 @@ export function ProxyPoolPage() {
               </FormItem>
             </div>
           )}
+          {importMode === 'chain' && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <FormItem label="代理名称（可选）">
+                  <Input
+                    value={chainImportForm.proxyName}
+                    onChange={e => setChainImportForm(prev => ({ ...prev, proxyName: e.target.value }))}
+                    placeholder="例如：双层香港链路"
+                  />
+                </FormItem>
+                <FormItem label="本地监听端口（可选）">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={chainImportForm.localPort}
+                    onChange={e => setChainImportForm(prev => ({ ...prev, localPort: e.target.value }))}
+                    placeholder="留空自动分配"
+                  />
+                </FormItem>
+              </div>
+
+              <div className="rounded-md border border-[var(--color-border)] p-3 space-y-3">
+                <h4 className="text-sm font-medium text-[var(--color-text-primary)]">第一层 SOCKS5</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <FormItem label="代理地址" required>
+                    <Input
+                      value={chainImportForm.first.server}
+                      onChange={e => updateChainHop('first', 'server', e.target.value)}
+                      placeholder="例如：s1.example.com"
+                    />
+                  </FormItem>
+                  <FormItem label="代理端口" required>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={chainImportForm.first.port}
+                      onChange={e => updateChainHop('first', 'port', e.target.value)}
+                      placeholder="例如：1080"
+                    />
+                  </FormItem>
+                  <FormItem label="账号（可选）">
+                    <Input
+                      value={chainImportForm.first.username}
+                      onChange={e => updateChainHop('first', 'username', e.target.value)}
+                      placeholder="留空则不使用认证"
+                    />
+                  </FormItem>
+                  <FormItem label="密码（可选）">
+                    <Input
+                      type="password"
+                      value={chainImportForm.first.password}
+                      onChange={e => updateChainHop('first', 'password', e.target.value)}
+                      placeholder="留空则不使用密码"
+                    />
+                  </FormItem>
+                </div>
+              </div>
+
+              <div className="rounded-md border border-[var(--color-border)] p-3 space-y-3">
+                <h4 className="text-sm font-medium text-[var(--color-text-primary)]">第二层 SOCKS5</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <FormItem label="代理地址" required>
+                    <Input
+                      value={chainImportForm.second.server}
+                      onChange={e => updateChainHop('second', 'server', e.target.value)}
+                      placeholder="例如：s2.example.com"
+                    />
+                  </FormItem>
+                  <FormItem label="代理端口" required>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={chainImportForm.second.port}
+                      onChange={e => updateChainHop('second', 'port', e.target.value)}
+                      placeholder="例如：1081"
+                    />
+                  </FormItem>
+                  <FormItem label="账号（可选）">
+                    <Input
+                      value={chainImportForm.second.username}
+                      onChange={e => updateChainHop('second', 'username', e.target.value)}
+                      placeholder="留空则不使用认证"
+                    />
+                  </FormItem>
+                  <FormItem label="密码（可选）">
+                    <Input
+                      type="password"
+                      value={chainImportForm.second.password}
+                      onChange={e => updateChainHop('second', 'password', e.target.value)}
+                      placeholder="留空则不使用密码"
+                    />
+                  </FormItem>
+                </div>
+              </div>
+            </div>
+          )}
+
           <FormItem label="分组名称（可选）">
             <Input
               value={importGroupName}
@@ -1810,7 +2147,17 @@ export function ProxyPoolPage() {
         footer={<><Button variant="secondary" onClick={() => setEditModalOpen(false)}>取消</Button><Button onClick={handleSaveProxy} loading={saving}>保存</Button></>}>
         <div className="space-y-4">
           <FormItem label="代理名称" required>
-            <Input value={editForm.proxyName} onChange={e => setEditForm(prev => ({ ...prev, proxyName: e.target.value }))} placeholder="例如：香港节点" />
+            <Input
+              value={chainEditMode ? chainImportForm.proxyName : editForm.proxyName}
+              onChange={e => {
+                if (chainEditMode) {
+                  setChainImportForm(prev => ({ ...prev, proxyName: e.target.value }))
+                } else {
+                  setEditForm(prev => ({ ...prev, proxyName: e.target.value }))
+                }
+              }}
+              placeholder="例如：香港节点"
+            />
           </FormItem>
           <FormItem label="分组名称（可选）">
             <Input value={editForm.groupName} onChange={e => setEditForm(prev => ({ ...prev, groupName: e.target.value }))} placeholder="例如：香港、美国" list="edit-proxy-groups-datalist" />
@@ -1818,9 +2165,61 @@ export function ProxyPoolPage() {
               {groups.map(g => <option key={g} value={g} />)}
             </datalist>
           </FormItem>
-          <FormItem label="代理配置">
-            <Textarea value={editForm.proxyConfig} onChange={e => setEditForm(prev => ({ ...prev, proxyConfig: e.target.value }))} rows={10} placeholder="支持 Clash YAML、http://、https://、socks5:// 代理配置" />
-          </FormItem>
+          {chainEditMode ? (
+            <div className="space-y-3 rounded-md border border-[var(--color-border)] p-3">
+              <p className="text-xs text-[var(--color-text-muted)]">
+                链式代理会在启动实例时自动桥接为本地 SOCKS5，并以 <code className="px-1 bg-[var(--color-bg-secondary)] rounded">socks5://127.0.0.1:&lt;port&gt;</code> 传给 Chromium。
+              </p>
+              <FormItem label="本地监听端口（可选）">
+                <Input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={chainImportForm.localPort}
+                  onChange={e => setChainImportForm(prev => ({ ...prev, localPort: e.target.value }))}
+                  placeholder="留空自动分配"
+                />
+              </FormItem>
+              <div className="rounded-md border border-[var(--color-border)] p-3 space-y-3">
+                <h4 className="text-sm font-medium text-[var(--color-text-primary)]">第一层 SOCKS5</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <FormItem label="代理地址" required>
+                    <Input value={chainImportForm.first.server} onChange={e => updateChainHop('first', 'server', e.target.value)} />
+                  </FormItem>
+                  <FormItem label="代理端口" required>
+                    <Input type="number" min={1} max={65535} value={chainImportForm.first.port} onChange={e => updateChainHop('first', 'port', e.target.value)} />
+                  </FormItem>
+                  <FormItem label="账号（可选）">
+                    <Input value={chainImportForm.first.username} onChange={e => updateChainHop('first', 'username', e.target.value)} />
+                  </FormItem>
+                  <FormItem label="密码（可选）">
+                    <Input type="password" value={chainImportForm.first.password} onChange={e => updateChainHop('first', 'password', e.target.value)} />
+                  </FormItem>
+                </div>
+              </div>
+              <div className="rounded-md border border-[var(--color-border)] p-3 space-y-3">
+                <h4 className="text-sm font-medium text-[var(--color-text-primary)]">第二层 SOCKS5</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <FormItem label="代理地址" required>
+                    <Input value={chainImportForm.second.server} onChange={e => updateChainHop('second', 'server', e.target.value)} />
+                  </FormItem>
+                  <FormItem label="代理端口" required>
+                    <Input type="number" min={1} max={65535} value={chainImportForm.second.port} onChange={e => updateChainHop('second', 'port', e.target.value)} />
+                  </FormItem>
+                  <FormItem label="账号（可选）">
+                    <Input value={chainImportForm.second.username} onChange={e => updateChainHop('second', 'username', e.target.value)} />
+                  </FormItem>
+                  <FormItem label="密码（可选）">
+                    <Input type="password" value={chainImportForm.second.password} onChange={e => updateChainHop('second', 'password', e.target.value)} />
+                  </FormItem>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <FormItem label="代理配置">
+              <Textarea value={editForm.proxyConfig} onChange={e => setEditForm(prev => ({ ...prev, proxyConfig: e.target.value }))} rows={10} placeholder="支持 Clash YAML、http://、https://、socks5://、chain+socks5:// 代理配置" />
+            </FormItem>
+          )}
           <FormItem label="DNS 服务器（可选）">
             <Textarea value={editForm.dnsServers} onChange={e => setEditForm(prev => ({ ...prev, dnsServers: e.target.value }))} rows={6}
               placeholder={`dns:\n  enable: true\n  nameserver:\n    - 119.29.29.29\n    - 223.5.5.5`} />

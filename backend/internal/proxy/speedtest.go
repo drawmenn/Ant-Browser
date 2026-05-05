@@ -74,14 +74,33 @@ func SpeedTest(
 		testURL = cfg.URLs[0]
 	}
 
+	resolvedSrc := src
+	if IsChainSocks5Proxy(src) {
+		if xrayMgr == nil {
+			log.Warn("链式代理测速缺少 Xray 管理器，降级到 TCP ping",
+				logger.F("proxy_id", proxyId),
+			)
+			return tcpPingFallback(proxyId, src, cfg.TCPTimeout, log)
+		}
+		bridgeSocksURL, bridgeErr := xrayMgr.EnsureBridge(src, proxies, proxyId)
+		if bridgeErr != nil {
+			log.Warn("链式代理桥接失败，降级到 TCP ping",
+				logger.F("proxy_id", proxyId),
+				logger.F("error", bridgeErr.Error()),
+			)
+			return tcpPingFallback(proxyId, src, cfg.TCPTimeout, log)
+		}
+		resolvedSrc = strings.TrimSpace(bridgeSocksURL)
+	}
+
 	// 将代理配置转换为 mihomo mapping
-	mapping, err := proxyConfigToMapping(src)
+	mapping, err := proxyConfigToMapping(resolvedSrc)
 	if err != nil {
 		log.Warn("代理配置解析失败，降级到 TCP ping",
 			logger.F("proxy_id", proxyId),
 			logger.F("error", err.Error()),
 		)
-		return tcpPingFallback(proxyId, src, cfg.TCPTimeout, log)
+		return tcpPingFallback(proxyId, resolvedSrc, cfg.TCPTimeout, log)
 	}
 
 	// 使用 mihomo adapter.ParseProxy 创建代理实例
@@ -92,7 +111,7 @@ func SpeedTest(
 			logger.F("error", err.Error()),
 			logger.F("type", mapping["type"]),
 		)
-		return tcpPingFallback(proxyId, src, cfg.TCPTimeout, log)
+		return tcpPingFallback(proxyId, resolvedSrc, cfg.TCPTimeout, log)
 	}
 
 	// unified-delay 测速：分离连接建立和 HTTP 往返计时

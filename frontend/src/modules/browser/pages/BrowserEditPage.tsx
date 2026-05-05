@@ -10,6 +10,8 @@ import { GroupSelector } from '../components/GroupSelector'
 import { ProxyPickerModal } from '../components/ProxyPickerModal'
 
 const fallbackLowLaunchArgs = ['--disable-sync', '--no-first-run']
+const BROWSER_LIST_ROUTE = '/browser/list'
+const DIRECT_PROXY_ID = '__direct__'
 
 function normalizeLaunchArgs(args: string[]): string[] {
   return (args || []).map(item => item.trim()).filter(Boolean)
@@ -110,7 +112,7 @@ export function BrowserEditPage() {
         toast.success('配置已更新')
       }
       setIsDirty(false)
-      navigate('/browser/list')
+      navigate(BROWSER_LIST_ROUTE)
     } catch (error: any) {
       setSaveError(typeof error === 'string' ? error : error?.message || '保存失败')
     } finally {
@@ -119,7 +121,7 @@ export function BrowserEditPage() {
   }
 
   const handleBack = () => {
-    if (isDirty) { setLeaveConfirm(true) } else { navigate('/browser/list') }
+    if (isDirty) { setLeaveConfirm(true) } else { navigate(BROWSER_LIST_ROUTE) }
   }
 
   const defaultCore = cores.find(c => c.isDefault)
@@ -133,6 +135,22 @@ export function BrowserEditPage() {
       await openUserDataDir(formData.userDataDir)
     } catch (error: unknown) {
       toast.error((error as Error)?.message || '打开目录失败')
+    }
+  }
+
+  const handleProxyListUpdated = (nextProxies: BrowserProxy[]) => {
+    setProxies(nextProxies)
+  }
+
+  const handleProxyDeleted = (deletedProxyId: string, nextProxies: BrowserProxy[]) => {
+    setProxies(nextProxies)
+    if (formData.proxyId === deletedProxyId) {
+      const fallbackProxy = nextProxies.find(item => item.proxyId === DIRECT_PROXY_ID)
+      if (fallbackProxy) {
+        handleChange('proxyId', DIRECT_PROXY_ID)
+      } else {
+        handleChange('proxyId', '')
+      }
     }
   }
 
@@ -236,7 +254,12 @@ export function BrowserEditPage() {
       <ProxyPickerModal
         open={proxyPickerOpen}
         currentProxyId={formData.proxyId}
-        onSelect={proxy => handleChange('proxyId', proxy.proxyId)}
+        onSelect={proxy => {
+          handleChange('proxyId', proxy.proxyId)
+          setProxies(prev => prev.some(item => item.proxyId === proxy.proxyId) ? prev : [...prev, proxy])
+        }}
+        onProxyListUpdated={handleProxyListUpdated}
+        onProxyDeleted={handleProxyDeleted}
         onClose={() => setProxyPickerOpen(false)}
       />
 
@@ -264,7 +287,7 @@ export function BrowserEditPage() {
       <ConfirmModal
         open={leaveConfirm}
         onClose={() => setLeaveConfirm(false)}
-        onConfirm={() => navigate('/browser/list')}
+        onConfirm={() => navigate(BROWSER_LIST_ROUTE)}
         title="放弃未保存的更改？"
         content="当前页面有未保存的修改，离开后将丢失这些更改。"
         confirmText="放弃并离开"
