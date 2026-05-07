@@ -32,6 +32,12 @@ export const navigationConfig: NavSection[] = [
     ]
   },
   {
+    title: '工具',
+    items: [
+      { name: '用户名扫描', path: '/tools/username-scan', icon: 'Search' },
+    ]
+  },
+  {
     title: '指纹浏览器',
     items: [
       { name: '实例列表', path: '/browser/list', icon: 'Monitor' },

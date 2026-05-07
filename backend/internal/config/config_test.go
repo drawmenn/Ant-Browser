@@ -128,7 +128,7 @@ app:
     height: 800
     min_width: 900
     min_height: 600
-  max_profile_limit: 20
+  max_profile_limit: 120
   used_cd_keys: []
 runtime:
   max_memory_mb: 2048
@@ -179,7 +179,7 @@ launch_server:
 		t.Fatalf("加载配置失败: %v", err)
 	}
 
-	if cfg.App.Name != "Custom App" || cfg.App.MaxProfileLimit != 20 {
+	if cfg.App.Name != "Custom App" || cfg.App.MaxProfileLimit != 120 {
 		t.Fatalf("App 显式配置被覆盖: got=%+v", cfg.App)
 	}
 	if cfg.Database.SQLite.Path != "custom/app.db" {

@@ -664,3 +664,218 @@ export namespace logger {
 
 }
 
+export namespace usernamescan {
+
+	export class BrowserScanOptions {
+	    profileId: string;
+	    url: string;
+	    inputSelector: string;
+	    submitSelector: string;
+	    resultSelector: string;
+	    availableText: string;
+	    takenText: string;
+	    holdText: string;
+	    waitAfterSubmitMs: number;
+	    timeoutMs: number;
+
+	    static createFrom(source: any = {}) {
+	        return new BrowserScanOptions(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.profileId = source["profileId"];
+	        this.url = source["url"];
+	        this.inputSelector = source["inputSelector"];
+	        this.submitSelector = source["submitSelector"];
+	        this.resultSelector = source["resultSelector"];
+	        this.availableText = source["availableText"];
+	        this.takenText = source["takenText"];
+	        this.holdText = source["holdText"];
+	        this.waitAfterSubmitMs = source["waitAfterSubmitMs"];
+	        this.timeoutMs = source["timeoutMs"];
+	    }
+	}
+	export class GeneratorOptions {
+	    sourceText: string;
+	    targetLength: number;
+	    allowDigits: boolean;
+	    maxResults: number;
+
+	    static createFrom(source: any = {}) {
+	        return new GeneratorOptions(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sourceText = source["sourceText"];
+	        this.targetLength = source["targetLength"];
+	        this.allowDigits = source["allowDigits"];
+	        this.maxResults = source["maxResults"];
+	    }
+	}
+	export class History {
+	    checked: number[];
+	    hit: number[];
+	    rate: number[];
+
+	    static createFrom(source: any = {}) {
+	        return new History(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.checked = source["checked"];
+	        this.hit = source["hit"];
+	        this.rate = source["rate"];
+	    }
+	}
+	export class LogEntry {
+	    level: string;
+	    message: string;
+	    params: Record<string, any>;
+	    timestamp: string;
+
+	    static createFrom(source: any = {}) {
+	        return new LogEntry(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.level = source["level"];
+	        this.message = source["message"];
+	        this.params = source["params"];
+	        this.timestamp = source["timestamp"];
+	    }
+	}
+	export class Result {
+	    name: string;
+	    status: string;
+	    message: string;
+	    checkedAt: string;
+
+	    static createFrom(source: any = {}) {
+	        return new Result(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.message = source["message"];
+	        this.checkedAt = source["checkedAt"];
+	    }
+	}
+	export class Stats {
+	    checked: number;
+	    hit: number;
+	    taken: number;
+	    hold: number;
+	    error: number;
+	    rate: number;
+
+	    static createFrom(source: any = {}) {
+	        return new Stats(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.checked = source["checked"];
+	        this.hit = source["hit"];
+	        this.taken = source["taken"];
+	        this.hold = source["hold"];
+	        this.error = source["error"];
+	        this.rate = source["rate"];
+	    }
+	}
+	export class Snapshot {
+	    running: boolean;
+	    paused: boolean;
+	    provider: string;
+	    queueSize: number;
+	    nextIndex: number;
+	    activeName: string;
+	    stats: Stats;
+	    history: History;
+	    results: Result[];
+	    logs: LogEntry[];
+
+	    static createFrom(source: any = {}) {
+	        return new Snapshot(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.running = source["running"];
+	        this.paused = source["paused"];
+	        this.provider = source["provider"];
+	        this.queueSize = source["queueSize"];
+	        this.nextIndex = source["nextIndex"];
+	        this.activeName = source["activeName"];
+	        this.stats = this.convertValues(source["stats"], Stats);
+	        this.history = this.convertValues(source["history"], History);
+	        this.results = this.convertValues(source["results"], Result);
+	        this.logs = this.convertValues(source["logs"], LogEntry);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class StartRequest {
+	    seeds: string[];
+	    candidates: string[];
+	    provider: string;
+	    browser: BrowserScanOptions;
+	    intervalMs: number;
+	    limit: number;
+
+	    static createFrom(source: any = {}) {
+	        return new StartRequest(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.seeds = source["seeds"];
+	        this.candidates = source["candidates"];
+	        this.provider = source["provider"];
+	        this.browser = this.convertValues(source["browser"], BrowserScanOptions);
+	        this.intervalMs = source["intervalMs"];
+	        this.limit = source["limit"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+

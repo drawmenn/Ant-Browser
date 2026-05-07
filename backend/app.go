@@ -8,6 +8,7 @@ import (
 	"ant-chrome/backend/internal/launchcode"
 	"ant-chrome/backend/internal/logger"
 	"ant-chrome/backend/internal/proxy"
+	"ant-chrome/backend/internal/usernamescan"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,19 +34,20 @@ const (
 
 // App 应用结构体
 type App struct {
-	ctx            context.Context
-	config         *config.Config
-	db             *database.DB
-	interceptor    *logger.MethodInterceptor
-	browserMgr     *browser.Manager
-	xrayMgr        *proxy.XrayManager
-	clashMgr       *proxy.ClashManager
-	singboxMgr     *proxy.SingBoxManager
-	launchCodeSvc  *launchcode.LaunchCodeService
-	launchServer   *launchcode.LaunchServer
-	speedScheduler *browser.ProxySpeedScheduler
-	appRoot        string
-	version        string
+	ctx             context.Context
+	config          *config.Config
+	db              *database.DB
+	interceptor     *logger.MethodInterceptor
+	browserMgr      *browser.Manager
+	xrayMgr         *proxy.XrayManager
+	clashMgr        *proxy.ClashManager
+	singboxMgr      *proxy.SingBoxManager
+	launchCodeSvc   *launchcode.LaunchCodeService
+	launchServer    *launchcode.LaunchServer
+	speedScheduler  *browser.ProxySpeedScheduler
+	usernameScanner *usernamescan.Service
+	appRoot         string
+	version         string
 
 	forceQuit        bool       // 强制退出标志，用于跳过 OnBeforeClose 的拦截
 	quitMode         quitMode   // 退出模式：全量退出 / 仅退出应用

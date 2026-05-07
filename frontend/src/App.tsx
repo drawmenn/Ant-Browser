@@ -39,6 +39,7 @@ const LaunchApiDocsPage = lazyNamed(() => import('./modules/browser/pages/Launch
 const TagManagementPage = lazyNamed(() => import('./modules/browser/pages/TagManagementPage'), 'TagManagementPage')
 const AutomationPage = lazyNamed(() => import('./modules/browser/pages/AutomationPage'), 'AutomationPage')
 const UsageTutorialPage = lazyNamed(() => import('./modules/browser/pages/UsageTutorialPage'), 'UsageTutorialPage')
+const UsernameScanPage = lazyNamed(() => import('./modules/username-scan/UsernameScanPage'), 'UsernameScanPage')
 const QuickLaunchModal = lazyNamed(() => import('./modules/browser/components/QuickLaunchModal'), 'QuickLaunchModal')
 
 function useWailsNotifications() {
@@ -293,6 +294,7 @@ function App() {
               <Route path="/browser/cores" element={<CoreManagementPage />} />
               <Route path="/browser/bookmarks" element={<BookmarkSettingsPage />} />
               <Route path="/browser/automation" element={<AutomationPage />} />
+              <Route path="/tools/username-scan" element={<UsernameScanPage />} />
               <Route path="/browser/launch-api" element={<LaunchApiDocsPage />} />
               <Route path="/browser/tags" element={<TagManagementPage />} />
               <Route path="/system/tutorial" element={<UsageTutorialPage />} />

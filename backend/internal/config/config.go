@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	DefaultMaxProfileLimit          = 20
+	DefaultMaxProfileLimit          = 100
 	StandardCDKeyProfileBonus       = 10
 	GithubStarRewardKey             = "GITHUB_STAR_REWARD"
 	GithubStarProfileBonus          = 50

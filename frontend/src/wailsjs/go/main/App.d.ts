@@ -6,6 +6,7 @@ import {browser} from '../models';
 import {backend} from '../models';
 import {logger} from '../models';
 import {launchcode} from '../models';
+import {usernamescan} from '../models';
 
 export function BackupExportPackage():Promise<Record<string, any>>;
 
@@ -178,5 +179,15 @@ export function TestProxyRealConnectivity(arg1:string):Promise<backend.ProxyTest
 export function TriggerGC():Promise<void>;
 
 export function UpdateGroup(arg1:string,arg2:browser.GroupInput):Promise<browser.Group>;
+
+export function UsernameScanGenerate(arg1:usernamescan.GeneratorOptions):Promise<Array<string>>;
+
+export function UsernameScanPause():Promise<usernamescan.Snapshot>;
+
+export function UsernameScanSnapshot():Promise<usernamescan.Snapshot>;
+
+export function UsernameScanStart(arg1:usernamescan.StartRequest):Promise<usernamescan.Snapshot>;
+
+export function UsernameScanStop():Promise<usernamescan.Snapshot>;
 
 export function ValidateProxyConfig(arg1:string,arg2:string):Promise<backend.ProxyValidationResult>;

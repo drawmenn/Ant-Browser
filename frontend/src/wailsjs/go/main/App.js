@@ -346,6 +346,26 @@ export function UpdateGroup(arg1, arg2) {
   return window['go']['main']['App']['UpdateGroup'](arg1, arg2);
 }
 
+export function UsernameScanGenerate(arg1) {
+  return window['go']['main']['App']['UsernameScanGenerate'](arg1);
+}
+
+export function UsernameScanPause() {
+  return window['go']['main']['App']['UsernameScanPause']();
+}
+
+export function UsernameScanSnapshot() {
+  return window['go']['main']['App']['UsernameScanSnapshot']();
+}
+
+export function UsernameScanStart(arg1) {
+  return window['go']['main']['App']['UsernameScanStart'](arg1);
+}
+
+export function UsernameScanStop() {
+  return window['go']['main']['App']['UsernameScanStop']();
+}
+
 export function ValidateProxyConfig(arg1, arg2) {
   return window['go']['main']['App']['ValidateProxyConfig'](arg1, arg2);
 }

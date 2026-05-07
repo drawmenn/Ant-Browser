@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import {
   Activity,
+  Bot,
   Bookmark,
   BookOpen,
   FileText,
@@ -15,6 +16,7 @@ import {
   PieChart,
   Cpu,
   Globe,
+  Search,
   Tag,
   type LucideIcon
 } from 'lucide-react'
@@ -34,11 +36,13 @@ const iconMap: Record<string, LucideIcon> = {
   Monitor,
   ListChecks,
   Activity,
+  Bot,
   FileText,
   Cpu,
   Globe,
   Bookmark,
   BookOpen,
+  Search,
   Tag,
 }
 
